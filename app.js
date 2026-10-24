@@ -43,8 +43,22 @@ function toggleTheme() {
   const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = t; localStorage.setItem("theme", t);
 }
-const themeBtn = `<button class="btn sm" data-act="theme">Light / Dark</button>`;
+const svg = p => `<span class="ic"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg></span>`;
+const ICON = {
+  orders: svg('<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>'),
+  dash: svg('<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>'),
+  team: svg('<path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M21 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>'),
+  theme: svg('<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/>'),
+  out: svg('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>')
+};
+const themeBtn = `<button class="btn sm" data-act="theme" aria-label="Light or dark mode">${ICON.theme}<span class="lbl">Light / Dark</span></button>`;
 
+function verifyProfile(u) {
+  getDoc(doc(db, "users", u.uid)).then(snap => {
+    const p = snap.exists() ? snap.data() : null;
+    if (!p || p.role !== S.profile.role || p.name !== S.profile.name) { lsSet("profile", p ? JSON.stringify({...p, uid:u.uid}) : "null"); location.reload(); }
+  }).catch(() => {});
+}
 function setLive(on) { const l = $("#live"); if (!l) return; l.className = "live " + (on ? "on" : "off"); l.textContent = on ? "● Live" : "● Offline"; }
 addEventListener("online", () => setLive(true));
 addEventListener("offline", () => setLive(false));
@@ -60,13 +74,16 @@ if (!configured) {
   onAuthStateChanged(auth, async u => {
     unsubs.forEach(f => f()); unsubs = [];
     S.loaded = false; S.synced = false; if (!u) S.orders = [];
-    if (!u) { S.user = null; S.profile = null; renderLogin(); return; }
+    if (!u) { S.user = null; S.profile = null; lsSet("profile", "null"); renderLogin(); return; }
     S.user = u;
+    const cached = (() => { try { return JSON.parse(lsGet("profile", "null")); } catch (e) { return null; } })();
+    if (cached && cached.uid === u.uid && ["admin", "worker"].includes(cached.role)) { S.profile = cached; subscribe(); renderShell(); verifyProfile(u); return; }
     try {
       const snap = await getDoc(doc(db, "users", u.uid));
       S.profile = snap.exists() ? snap.data() : null;
     } catch (e) { S.profile = null; }
     if (!S.profile || !["admin", "worker"].includes(S.profile.role)) { renderBlocked(); return; }
+    lsSet("profile", JSON.stringify({...S.profile, uid:u.uid}));
     subscribe(); renderShell();
   });
 }
@@ -79,7 +96,7 @@ function subscribe() {
     });
     if (fresh) S.synced = true;
     S.orders = snap.docs.map(d => ({id:d.id, ...d.data()})); S.loaded = true;
-    setLive(fresh && navigator.onLine); renderView();
+    setLive(fresh && navigator.onLine); if (S.tab !== "team") renderView();
   }, e => toast("Orders load hoyni: " + e.code)));
   if (isAdmin()) unsubs.push(onSnapshot(collection(db, "users"), snap => {
     S.users = snap.docs.map(d => ({id:d.id, ...d.data()})); if (S.tab === "team") renderView();
@@ -114,7 +131,7 @@ function renderLogin() {
 }
 
 function renderBlocked() {
-  $("#app").innerHTML = `<div class="top"><h1>Order Desk</h1>${themeBtn}<button class="btn sm" data-act="logout">Sign out</button></div>
+  $("#app").innerHTML = `<div class="top"><h1>Order Desk</h1>${themeBtn}<button class="btn sm" data-act="logout" aria-label="Sign out">${ICON.out}<span class="lbl">Sign out</span></button></div>
   <div class="wrap"><div class="box" style="padding:16px"><b>Access nei.</b><p>Ei account e role set kora nei ba disable kora ache. Admin ke bolo tomar account e role dite.</p></div></div>`;
 }
 
@@ -124,13 +141,19 @@ function renderShell() {
   if (!tabs.some(t => t[0] === S.tab)) S.tab = "orders";
   history.replaceState(null, "", "#" + S.tab);
   $("#app").innerHTML = `
-  <div class="top"><h1>Order Desk</h1><span class="live ${navigator.onLine ? "on" : "off"}" id="live">${navigator.onLine ? "● Live" : "● Offline"}</span><span class="m">${esc(S.profile.name || S.user.email)} · ${esc(S.profile.role)}</span>${themeBtn}<button class="btn sm" data-act="logout">Sign out</button></div>
-  <div class="wrap"><div class="tabs">${tabs.map(t => `<button class="tab ${S.tab === t[0] ? "on" : ""}" data-act="tab" data-v="${t[0]}">${t[1]}</button>`).join("")}</div><div id="view"></div></div>`;
+  <div class="top"><h1>Order Desk</h1><span class="live ${navigator.onLine ? "on" : "off"}" id="live">${navigator.onLine ? "● Live" : "● Offline"}</span><span class="m who">${esc(S.profile.name || S.user.email)} · ${esc(S.profile.role)}</span>${themeBtn}<button class="btn sm" data-act="logout" aria-label="Sign out">${ICON.out}<span class="lbl">Sign out</span></button></div>
+  <div class="wrap"><div class="tabs">${tabs.map(t => `<button class="tab ${S.tab === t[0] ? "on" : ""}" data-act="tab" data-v="${t[0]}">${ICON[t[0]]}<span>${t[1]}</span></button>`).join("")}</div><div id="view"></div></div>`;
   renderView();
 }
-function renderView() {
-  if (!$("#view")) return;
-  ({orders:viewOrders, dash:viewDash, team:viewTeam})[S.tab]();
+let raf = 0, fadeNext = false;
+function renderView(fade) {
+  if (fade) fadeNext = true;
+  if (raf) return;
+  raf = requestAnimationFrame(() => {
+    raf = 0; const v = $("#view"); if (!v) return;
+    ({orders:viewOrders, dash:viewDash, team:viewTeam})[S.tab]();
+    if (fadeNext) { fadeNext = false; v.classList.remove("fade"); void v.offsetWidth; v.classList.add("fade"); }
+  });
 }
 
 /* ---------- orders ---------- */
@@ -140,15 +163,16 @@ function viewOrders() {
   const list = S.orders.filter(o =>
     (S.filter === "all" || o.status === S.filter) &&
     (!keep || [o.orderNo, o.customer, o.game, o.service, o.mail].join(" ").toLowerCase().includes(keep.toLowerCase())));
+  const shown = list.slice(0, S.limitN || 30);
   $("#view").innerHTML = `
   <div class="bar">
     <input id="q" type="search" placeholder="Search order ID, customer, game, service" value="${esc(keep)}">
     <select id="sf">${["all", "pending", "processing", "delivered", "cancelled"].map(s => `<option value="${s}" ${S.filter === s ? "selected" : ""}>${s === "all" ? "All status" : STATUS[s]}</option>`).join("")}</select>
     ${isAdmin() ? `<button class="btn pri" data-act="new">New order</button>` : ""}
   </div>
-  <div class="orders">${list.length ? list.map(orderCard).join("") : `<div class="empty box">Kono order nei.</div>`}</div>`;
-  const q = $("#q"); q.oninput = () => { S.q = q.value; clearTimeout(q.t); q.t = setTimeout(() => { viewOrders(); const n = $("#q"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250); };
-  $("#sf").onchange = e => { S.filter = e.target.value; lsSet("filter", S.filter); viewOrders(); };
+  <div class="orders">${list.length ? shown.map(orderCard).join("") + (list.length > shown.length ? `<button class="btn more" data-act="more">Show more (${list.length - shown.length})</button>` : "") : `<div class="empty box">Kono order nei.</div>`}</div>`;
+  const q = $("#q"); q.oninput = () => { S.q = q.value; S.limitN = 30; clearTimeout(q.t); q.t = setTimeout(() => { viewOrders(); const n = $("#q"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250); };
+  $("#sf").onchange = e => { S.filter = e.target.value; S.limitN = 30; lsSet("filter", S.filter); viewOrders(); };
 }
 function orderCard(o) {
   const profit = (o.sell || 0) - (o.buy || 0);
@@ -277,6 +301,7 @@ function exportCsv() {
 
 /* ---------- team (admin) ---------- */
 function viewTeam() {
+  if (!S.users.length) { $("#view").innerHTML = SKEL; return; }
   $("#view").innerHTML = `
   <div class="box" style="padding:12px;margin-bottom:16px"><b>Add worker</b>
     <form id="wf"><div class="two"><div><label>Name</label><input name="name" required></div><div><label>Email</label><input name="email" type="email" required></div></div>
@@ -302,11 +327,12 @@ document.addEventListener("click", async e => {
   const b = e.target.closest("[data-act]"); if (!b) return;
   const a = b.dataset.act, id = b.dataset.id, v = b.dataset.v;
   if (a === "theme") toggleTheme();
-  else if (a === "logout") { try { await signOut(auth); await terminate(db); await clearIndexedDbPersistence(db); } catch (e) {} location.reload(); }
-  else if (a === "tab") { S.tab = v; lsSet("tab", v); history.replaceState(null, "", "#" + v); renderShell(); }
+  else if (a === "logout") { lsSet("profile", "null"); try { await signOut(auth); await terminate(db); await clearIndexedDbPersistence(db); } catch (e) {} location.reload(); }
+  else if (a === "tab") { S.tab = v; lsSet("tab", v); history.replaceState(null, "", "#" + v); document.querySelectorAll("[data-act=tab]").forEach(t => t.classList.toggle("on", t.dataset.v === v)); renderView(true); }
   else if (a === "new") openForm();
   else if (a === "edit") openForm(S.orders.find(o => o.id === id));
   else if (a === "close") $("#dlg").close();
+  else if (a === "more") { S.limitN = (S.limitN || 30) + 30; renderView(); }
   else if (a === "cancel") openCancel(id);
   else if (a === "status") { b.disabled = true; await setStatus(id, v); b.disabled = false; }
   else if (a === "csv") exportCsv();
