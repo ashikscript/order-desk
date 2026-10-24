@@ -71,3 +71,13 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
 .pos{color:var(--ok)}.neg{color:var(--bad)}
 @media(max-width:520px){.two{grid-template-columns:1fr}}
 @media(prefers-reduced-motion:no-preference){.btn{transition:border-color .15s}}
+
+/* smooth loading + live indicator */
+.splash{display:grid;place-items:center;height:60vh;color:var(--mut)}
+.sk{height:96px;background:linear-gradient(90deg,var(--bg2),var(--bd),var(--bg2));background-size:200% 100%}
+@media(prefers-reduced-motion:no-preference){.sk{animation:sk 1.2s ease-in-out infinite}}
+@keyframes sk{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.live{font-size:12px;font-weight:600;white-space:nowrap}
+.live.on{color:var(--ok)}
+.live.off{color:var(--warn)}
+.btn:disabled{opacity:.6;cursor:wait}

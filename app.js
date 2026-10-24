@@ -11,11 +11,15 @@ const firebaseConfig = {
 
 import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {getAuth,onAuthStateChanged,signInWithEmailAndPassword,signOut,createUserWithEmailAndPassword} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import {getFirestore,collection,doc,getDoc,setDoc,onSnapshot,query,orderBy,limit,serverTimestamp,writeBatch} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {getFirestore,initializeFirestore,persistentLocalCache,persistentMultipleTabManager,terminate,clearIndexedDbPersistence,collection,doc,getDoc,setDoc,onSnapshot,query,orderBy,limit,serverTimestamp,writeBatch} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const configured = !firebaseConfig.apiKey.startsWith("PASTE");
 let app, auth, db;
-if (configured) { app = initializeApp(firebaseConfig); auth = getAuth(app); db = getFirestore(app); }
+if (configured) {
+  app = initializeApp(firebaseConfig); auth = getAuth(app);
+  try { db = initializeFirestore(app, {localCache: persistentLocalCache({tabManager: persistentMultipleTabManager()})}); }
+  catch (e) { db = getFirestore(app); }
+}
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -25,7 +29,10 @@ const mkey = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "
 const fmt = x => dt(x).toLocaleString("en-GB", {day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit"});
 const STATUS = {pending:"Pending", processing:"In progress", delivered:"Delivered", cancelled:"Cancelled"};
 
-let S = {user:null, profile:null, orders:[], users:[], tab:"orders", month:mkey(new Date()), filter:"all", q:""};
+const lsGet = (k, d) => { try { return localStorage.getItem(k) || d; } catch { return d; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+const SKEL = `<div class="orders">${'<div class="box o sk"></div>'.repeat(4)}</div>`;
+let S = {user:null, profile:null, orders:[], users:[], loaded:false, synced:false, tab:(location.hash.slice(1) || lsGet("tab", "orders")), month:mkey(new Date()), filter:lsGet("filter", "all"), q:""};
 let unsubs = [];
 const isAdmin = () => S.profile?.role === "admin";
 
@@ -38,6 +45,9 @@ function toggleTheme() {
 }
 const themeBtn = `<button class="btn sm" data-act="theme">Light / Dark</button>`;
 
+function setLive(on) { const l = $("#live"); if (!l) return; l.className = "live " + (on ? "on" : "off"); l.textContent = on ? "● Live" : "● Offline"; }
+addEventListener("online", () => setLive(true));
+addEventListener("offline", () => setLive(false));
 function toast(m) {
   const t = document.createElement("div"); t.className = "toast"; t.textContent = m;
   document.body.append(t); setTimeout(() => t.remove(), 2200);
@@ -49,6 +59,7 @@ if (!configured) {
 } else {
   onAuthStateChanged(auth, async u => {
     unsubs.forEach(f => f()); unsubs = [];
+    S.loaded = false; S.synced = false; if (!u) S.orders = [];
     if (!u) { S.user = null; S.profile = null; renderLogin(); return; }
     S.user = u;
     try {
@@ -62,7 +73,13 @@ if (!configured) {
 
 function subscribe() {
   unsubs.push(onSnapshot(query(collection(db, "orders"), orderBy("createdAt", "desc"), limit(1000)), snap => {
-    S.orders = snap.docs.map(d => ({id:d.id, ...d.data()})); renderView();
+    const fresh = !snap.metadata.fromCache;
+    if (S.synced && fresh) snap.docChanges().forEach(c => {
+      if (c.type === "added" && !c.doc.metadata.hasPendingWrites) { const d = c.doc.data(); toast("Notun order: " + (d.orderNo ? "#" + d.orderNo : d.game)); }
+    });
+    if (fresh) S.synced = true;
+    S.orders = snap.docs.map(d => ({id:d.id, ...d.data()})); S.loaded = true;
+    setLive(fresh && navigator.onLine); renderView();
   }, e => toast("Orders load hoyni: " + e.code)));
   if (isAdmin()) unsubs.push(onSnapshot(collection(db, "users"), snap => {
     S.users = snap.docs.map(d => ({id:d.id, ...d.data()})); if (S.tab === "team") renderView();
@@ -86,7 +103,7 @@ function renderLogin() {
   $("#lf").onsubmit = async e => {
     e.preventDefault(); $("#le").textContent = "";
     try { await signInWithEmailAndPassword(auth, $("#em").value.trim(), $("#pw").value); }
-    catch (err) { $("#le").textContent = "Email ba password thik na."; }
+    catch (err) { $("#le").textContent = "Login hoyni (" + (err.code || "unknown") + "). Email ba password check koro."; }
   };
   unsubs.push(onSnapshot(query(collection(db, "publicFeed"), orderBy("at", "desc"), limit(8)), snap => {
     const f = $("#feed"); if (!f) return;
@@ -104,8 +121,10 @@ function renderBlocked() {
 /* ---------- shell ---------- */
 function renderShell() {
   const tabs = [["orders", "Orders"]].concat(isAdmin() ? [["dash", "Dashboard"], ["team", "Team"]] : []);
+  if (!tabs.some(t => t[0] === S.tab)) S.tab = "orders";
+  history.replaceState(null, "", "#" + S.tab);
   $("#app").innerHTML = `
-  <div class="top"><h1>Order Desk</h1><span class="m">${esc(S.profile.name || S.user.email)} · ${esc(S.profile.role)}</span>${themeBtn}<button class="btn sm" data-act="logout">Sign out</button></div>
+  <div class="top"><h1>Order Desk</h1><span class="live ${navigator.onLine ? "on" : "off"}" id="live">${navigator.onLine ? "● Live" : "● Offline"}</span><span class="m">${esc(S.profile.name || S.user.email)} · ${esc(S.profile.role)}</span>${themeBtn}<button class="btn sm" data-act="logout">Sign out</button></div>
   <div class="wrap"><div class="tabs">${tabs.map(t => `<button class="tab ${S.tab === t[0] ? "on" : ""}" data-act="tab" data-v="${t[0]}">${t[1]}</button>`).join("")}</div><div id="view"></div></div>`;
   renderView();
 }
@@ -116,6 +135,7 @@ function renderView() {
 
 /* ---------- orders ---------- */
 function viewOrders() {
+  if (!S.loaded) { $("#view").innerHTML = SKEL; return; }
   const keep = $("#q")?.value ?? S.q;
   const list = S.orders.filter(o =>
     (S.filter === "all" || o.status === S.filter) &&
@@ -128,7 +148,7 @@ function viewOrders() {
   </div>
   <div class="orders">${list.length ? list.map(orderCard).join("") : `<div class="empty box">Kono order nei.</div>`}</div>`;
   const q = $("#q"); q.oninput = () => { S.q = q.value; clearTimeout(q.t); q.t = setTimeout(() => { viewOrders(); const n = $("#q"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250); };
-  $("#sf").onchange = e => { S.filter = e.target.value; viewOrders(); };
+  $("#sf").onchange = e => { S.filter = e.target.value; lsSet("filter", S.filter); viewOrders(); };
 }
 function orderCard(o) {
   const profit = (o.sell || 0) - (o.buy || 0);
@@ -224,6 +244,7 @@ function openCancel(id) {
 /* ---------- dashboard (admin) ---------- */
 function monthOrders() { return S.orders.filter(o => mkey(dt(o.createdAt)) === S.month); }
 function viewDash() {
+  if (!S.loaded) { $("#view").innerHTML = SKEL; return; }
   const all = monthOrders(), done = all.filter(o => o.status === "delivered"), canc = all.filter(o => o.status === "cancelled");
   const rev = done.reduce((a, o) => a + (o.sell || 0), 0), cost = done.reduce((a, o) => a + (o.buy || 0), 0);
   const byW = {}; done.forEach(o => { const n = o.assignedName || "Unassigned"; byW[n] = (byW[n] || 0) + 1; });
@@ -281,13 +302,13 @@ document.addEventListener("click", async e => {
   const b = e.target.closest("[data-act]"); if (!b) return;
   const a = b.dataset.act, id = b.dataset.id, v = b.dataset.v;
   if (a === "theme") toggleTheme();
-  else if (a === "logout") signOut(auth);
-  else if (a === "tab") { S.tab = v; renderShell(); }
+  else if (a === "logout") { try { await signOut(auth); await terminate(db); await clearIndexedDbPersistence(db); } catch (e) {} location.reload(); }
+  else if (a === "tab") { S.tab = v; lsSet("tab", v); history.replaceState(null, "", "#" + v); renderShell(); }
   else if (a === "new") openForm();
   else if (a === "edit") openForm(S.orders.find(o => o.id === id));
   else if (a === "close") $("#dlg").close();
   else if (a === "cancel") openCancel(id);
-  else if (a === "status") setStatus(id, v);
+  else if (a === "status") { b.disabled = true; await setStatus(id, v); b.disabled = false; }
   else if (a === "csv") exportCsv();
   else if (a === "copy") { try { await navigator.clipboard.writeText(v); toast("Copied"); } catch { toast("Copy hoyni"); } }
   else if (a === "show") { const s = b.parentElement.querySelector(".pw"); const open = b.textContent === "Hide"; s.textContent = open ? "••••••••" : s.dataset.pw; b.textContent = open ? "Show" : "Hide"; }
